@@ -363,7 +363,6 @@ class SpotifyMediaPlayer(MediaPlayerEntity):
                     device["id"], self.state == STATE_PLAYING
                 )
                 return
-        print("not found")
 
     @spotify_exception_handler
     def set_shuffle(self, shuffle: bool) -> None:
