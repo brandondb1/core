@@ -57,10 +57,12 @@ class DescriptionXmlView(HomeAssistantView):
 
 @core.callback
 def create_upnp_datagram_endpoint(
-    host_ip_addr, upnp_bind_multicast, advertise_ip, advertise_port,
+    host_ip_addr,
+    upnp_bind_multicast,
+    advertise_ip,
+    advertise_port,
 ):
     """Create the UPNP socket and protocol."""
-
     # Listen for UDP port 1900 packets sent to SSDP multicast address
     ssdp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     ssdp_socket.setblocking(False)

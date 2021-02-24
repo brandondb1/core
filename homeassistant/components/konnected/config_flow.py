@@ -17,10 +17,12 @@ from homeassistant.components.ssdp import ATTR_UPNP_MANUFACTURER, ATTR_UPNP_MODE
 from homeassistant.const import (
     CONF_ACCESS_TOKEN,
     CONF_BINARY_SENSORS,
+    CONF_DISCOVERY,
     CONF_HOST,
     CONF_ID,
     CONF_NAME,
     CONF_PORT,
+    CONF_REPEAT,
     CONF_SENSORS,
     CONF_SWITCHES,
     CONF_TYPE,
@@ -34,13 +36,11 @@ from .const import (
     CONF_API_HOST,
     CONF_BLINK,
     CONF_DEFAULT_OPTIONS,
-    CONF_DISCOVERY,
     CONF_INVERSE,
     CONF_MODEL,
     CONF_MOMENTARY,
     CONF_PAUSE,
     CONF_POLL_INTERVAL,
-    CONF_REPEAT,
     DOMAIN,
     STATE_HIGH,
     STATE_LOW,
@@ -169,8 +169,6 @@ class KonnectedFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     # class variable to store/share discovered host information
     discovered_hosts = {}
 
-    # pylint: disable=no-member # https://github.com/PyCQA/pylint/issues/3167
-
     def __init__(self):
         """Initialize the Konnected flow."""
         self.data = {}
@@ -186,8 +184,8 @@ class KonnectedFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             status = await get_status(self.hass, host, port)
             self.data[CONF_ID] = status.get("chipId", status["mac"].replace(":", ""))
-        except (CannotConnect, KeyError):
-            raise CannotConnect
+        except (CannotConnect, KeyError) as err:
+            raise CannotConnect from err
         else:
             self.data[CONF_MODEL] = status.get("model", KONN_MODEL)
             self.data[CONF_ACCESS_TOKEN] = "".join(
@@ -349,7 +347,8 @@ class KonnectedFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         ) or "".join(random.choices(f"{string.ascii_uppercase}{string.digits}", k=20))
 
         return self.async_create_entry(
-            title=KONN_PANEL_MODEL_NAMES[self.data[CONF_MODEL]], data=self.data,
+            title=KONN_PANEL_MODEL_NAMES[self.data[CONF_MODEL]],
+            data=self.data,
         )
 
     @staticmethod

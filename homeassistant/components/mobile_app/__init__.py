@@ -1,7 +1,7 @@
 """Integrates Native Apps to Home Assistant."""
 import asyncio
 
-from homeassistant.components import cloud
+from homeassistant.components import cloud, notify as hass_notify
 from homeassistant.components.webhook import (
     async_register as webhook_register,
     async_unregister as webhook_unregister,
@@ -17,11 +17,9 @@ from .const import (
     ATTR_MODEL,
     ATTR_OS_VERSION,
     CONF_CLOUDHOOK_URL,
-    DATA_BINARY_SENSOR,
     DATA_CONFIG_ENTRIES,
     DATA_DELETED_IDS,
     DATA_DEVICES,
-    DATA_SENSOR,
     DATA_STORE,
     DOMAIN,
     STORAGE_KEY,
@@ -40,18 +38,14 @@ async def async_setup(hass: HomeAssistantType, config: ConfigType):
     app_config = await store.async_load()
     if app_config is None:
         app_config = {
-            DATA_BINARY_SENSOR: {},
             DATA_CONFIG_ENTRIES: {},
             DATA_DELETED_IDS: [],
-            DATA_SENSOR: {},
         }
 
     hass.data[DOMAIN] = {
-        DATA_BINARY_SENSOR: app_config.get(DATA_BINARY_SENSOR, {}),
         DATA_CONFIG_ENTRIES: {},
         DATA_DELETED_IDS: app_config.get(DATA_DELETED_IDS, []),
         DATA_DEVICES: {},
-        DATA_SENSOR: app_config.get(DATA_SENSOR, {}),
         DATA_STORE: store,
     }
 
@@ -101,6 +95,8 @@ async def async_setup_entry(hass, entry):
             hass.config_entries.async_forward_entry_setup(entry, domain)
         )
 
+    await hass_notify.async_reload(hass, DOMAIN)
+
     return True
 
 
@@ -117,7 +113,12 @@ async def async_unload_entry(hass, entry):
     if not unload_ok:
         return False
 
-    webhook_unregister(hass, entry.data[CONF_WEBHOOK_ID])
+    webhook_id = entry.data[CONF_WEBHOOK_ID]
+
+    webhook_unregister(hass, webhook_id)
+    del hass.data[DOMAIN][DATA_CONFIG_ENTRIES][webhook_id]
+    del hass.data[DOMAIN][DATA_DEVICES][webhook_id]
+    await hass_notify.async_reload(hass, DOMAIN)
 
     return True
 

@@ -9,14 +9,13 @@ from homeassistant.components.light import (
     SUPPORT_BRIGHTNESS,
     LightEntity,
 )
-from homeassistant.const import CONF_NAME, CONF_TYPE
+from homeassistant.const import CONF_DEVICES, CONF_NAME, CONF_TYPE
 import homeassistant.helpers.config_validation as cv
 
 from . import (
     CONF_ALIASES,
     CONF_AUTOMATIC_ADD,
     CONF_DEVICE_DEFAULTS,
-    CONF_DEVICES,
     CONF_FIRE_EVENT,
     CONF_GROUP,
     CONF_GROUP_ALIASES,
@@ -197,10 +196,9 @@ class DimmableRflinkLight(SwitchableRflinkDevice, LightEntity):
     @property
     def device_state_attributes(self):
         """Return the device state attributes."""
-        attr = {}
-        if self._brightness is not None:
-            attr[ATTR_BRIGHTNESS] = self._brightness
-        return attr
+        if self._brightness is None:
+            return {}
+        return {ATTR_BRIGHTNESS: self._brightness}
 
     @property
     def supported_features(self):
@@ -260,10 +258,9 @@ class HybridRflinkLight(SwitchableRflinkDevice, LightEntity):
     @property
     def device_state_attributes(self):
         """Return the device state attributes."""
-        attr = {}
-        if self._brightness is not None:
-            attr[ATTR_BRIGHTNESS] = self._brightness
-        return attr
+        if self._brightness is None:
+            return {}
+        return {ATTR_BRIGHTNESS: self._brightness}
 
     @property
     def supported_features(self):

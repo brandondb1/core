@@ -1,33 +1,38 @@
 """Manage config entries in Home Assistant."""
+from __future__ import annotations
+
 import asyncio
 import functools
 import logging
-from types import MappingProxyType
+from types import MappingProxyType, MethodType
 from typing import Any, Callable, Dict, List, Optional, Set, Union, cast
 import weakref
 
 import attr
 
 from homeassistant import data_entry_flow, loader
+from homeassistant.const import EVENT_CONFIG_ENTRY_DISABLED_BY_UPDATED
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import entity_registry
 from homeassistant.helpers.event import Event
+from homeassistant.helpers.typing import UNDEFINED, UndefinedType
 from homeassistant.setup import async_process_deps_reqs, async_setup_component
 from homeassistant.util.decorator import Registry
 import homeassistant.util.uuid as uuid_util
 
 _LOGGER = logging.getLogger(__name__)
-_UNDEF: dict = {}
 
 SOURCE_DISCOVERY = "discovery"
 SOURCE_HASSIO = "hassio"
 SOURCE_HOMEKIT = "homekit"
 SOURCE_IMPORT = "import"
 SOURCE_INTEGRATION_DISCOVERY = "integration_discovery"
+SOURCE_MQTT = "mqtt"
 SOURCE_SSDP = "ssdp"
 SOURCE_USER = "user"
 SOURCE_ZEROCONF = "zeroconf"
+SOURCE_DHCP = "dhcp"
 
 # If a user wants to hide a discovery from the UI they can "Ignore" it. The config_entries/ignore_flow
 # websocket command creates a config entry with this source and while it exists normal discoveries
@@ -38,6 +43,9 @@ SOURCE_IGNORE = "ignore"
 # config_entries/ignore_flow websocket command). It's triggered after the "ignore" config entry has
 # been removed and unloaded.
 SOURCE_UNIGNORE = "unignore"
+
+# This is used to signal that re-authentication is required by the user.
+SOURCE_REAUTH = "reauth"
 
 HANDLERS = Registry()
 
@@ -61,6 +69,8 @@ ENTRY_STATE_SETUP_RETRY = "setup_retry"
 ENTRY_STATE_NOT_LOADED = "not_loaded"
 # An error occurred when trying to unload the entry
 ENTRY_STATE_FAILED_UNLOAD = "failed_unload"
+# The config entry is disabled
+ENTRY_STATE_DISABLED = "disabled"
 
 UNRECOVERABLE_STATES = (ENTRY_STATE_MIGRATION_ERROR, ENTRY_STATE_FAILED_UNLOAD)
 
@@ -74,6 +84,8 @@ DISCOVERY_SOURCES = (
     SOURCE_UNIGNORE,
 )
 
+RECONFIGURE_NOTIFICATION_ID = "config_entry_reconfigure"
+
 EVENT_FLOW_DISCOVERED = "config_entry_discovered"
 
 CONN_CLASS_CLOUD_PUSH = "cloud_push"
@@ -82,6 +94,10 @@ CONN_CLASS_LOCAL_PUSH = "local_push"
 CONN_CLASS_LOCAL_POLL = "local_poll"
 CONN_CLASS_ASSUMED = "assumed"
 CONN_CLASS_UNKNOWN = "unknown"
+
+DISABLED_USER = "user"
+
+RELOAD_AFTER_UPDATE_DELAY = 30
 
 
 class ConfigError(HomeAssistantError):
@@ -115,6 +131,7 @@ class ConfigEntry:
         "source",
         "connection_class",
         "state",
+        "disabled_by",
         "_setup_lock",
         "update_listeners",
         "_async_cancel_retry_setup",
@@ -133,10 +150,11 @@ class ConfigEntry:
         unique_id: Optional[str] = None,
         entry_id: Optional[str] = None,
         state: str = ENTRY_STATE_NOT_LOADED,
+        disabled_by: Optional[str] = None,
     ) -> None:
         """Initialize a config entry."""
         # Unique id of the config entry
-        self.entry_id = entry_id or uuid_util.uuid_v1mc_hex()
+        self.entry_id = entry_id or uuid_util.random_uuid_hex()
 
         # Version of the configuration.
         self.version = version
@@ -168,11 +186,16 @@ class ConfigEntry:
         # Unique ID of this entry.
         self.unique_id = unique_id
 
+        # Config entry is disabled
+        self.disabled_by = disabled_by
+
         # Supports unload
         self.supports_unload = False
 
         # Listeners to call on update
-        self.update_listeners: List[weakref.ReferenceType[UpdateListenerType]] = []
+        self.update_listeners: List[
+            Union[weakref.ReferenceType[UpdateListenerType], weakref.WeakMethod]
+        ] = []
 
         # Function to cancel a scheduled retry
         self._async_cancel_retry_setup: Optional[Callable[[], Any]] = None
@@ -185,7 +208,7 @@ class ConfigEntry:
         tries: int = 0,
     ) -> None:
         """Set up an entry."""
-        if self.source == SOURCE_IGNORE:
+        if self.source == SOURCE_IGNORE or self.disabled_by:
             return
 
         if integration is None:
@@ -225,9 +248,7 @@ class ConfigEntry:
                 return
 
         try:
-            result = await component.async_setup_entry(  # type: ignore
-                hass, self
-            )
+            result = await component.async_setup_entry(hass, self)  # type: ignore
 
             if not isinstance(result, bool):
                 _LOGGER.error(
@@ -239,7 +260,8 @@ class ConfigEntry:
             wait_time = 2 ** min(tries, 4) * 5
             tries += 1
             _LOGGER.warning(
-                "Config entry for %s not ready yet. Retrying in %d seconds",
+                "Config entry '%s' for %s integration not ready yet. Retrying in %d seconds",
+                self.title,
                 self.domain,
                 wait_time,
             )
@@ -312,9 +334,7 @@ class ConfigEntry:
             return False
 
         try:
-            result = await component.async_unload_entry(  # type: ignore
-                hass, self
-            )
+            result = await component.async_unload_entry(hass, self)  # type: ignore
 
             assert isinstance(result, bool)
 
@@ -349,9 +369,7 @@ class ConfigEntry:
         if not hasattr(component, "async_remove_entry"):
             return
         try:
-            await component.async_remove_entry(  # type: ignore
-                hass, self
-            )
+            await component.async_remove_entry(hass, self)  # type: ignore
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception(
                 "Error calling entry remove callback %s for %s",
@@ -389,9 +407,7 @@ class ConfigEntry:
             return False
 
         try:
-            result = await component.async_migrate_entry(  # type: ignore
-                hass, self
-            )
+            result = await component.async_migrate_entry(hass, self)  # type: ignore
             if not isinstance(result, bool):
                 _LOGGER.error(
                     "%s.async_migrate_entry did not return boolean", self.domain
@@ -412,7 +428,12 @@ class ConfigEntry:
 
         Returns function to unlisten.
         """
-        weak_listener = weakref.ref(listener)
+        weak_listener: Any
+        # weakref.ref is not applicable to a bound method, e.g. method of a class instance, as reference will die immediately
+        if hasattr(listener, "__self__"):
+            weak_listener = weakref.WeakMethod(cast(MethodType, listener))
+        else:
+            weak_listener = weakref.ref(listener)
         self.update_listeners.append(weak_listener)
 
         return lambda: self.update_listeners.remove(weak_listener)
@@ -430,6 +451,7 @@ class ConfigEntry:
             "source": self.source,
             "connection_class": self.connection_class,
             "unique_id": self.unique_id,
+            "disabled_by": self.disabled_by,
         }
 
 
@@ -517,16 +539,16 @@ class ConfigEntriesFlowManager(data_entry_flow.FlowManager):
 
     async def async_create_flow(
         self, handler_key: Any, *, context: Optional[Dict] = None, data: Any = None
-    ) -> "ConfigFlow":
+    ) -> ConfigFlow:
         """Create a flow for specified handler.
 
         Handler key is the domain of the component that we want to set up.
         """
         try:
             integration = await loader.async_get_integration(self.hass, handler_key)
-        except loader.IntegrationNotFound:
+        except loader.IntegrationNotFound as err:
             _LOGGER.error("Cannot find integration %s", handler_key)
-            raise data_entry_flow.UnknownHandler
+            raise data_entry_flow.UnknownHandler from err
 
         # Make sure requirements and dependencies of component are resolved
         await async_process_deps_reqs(self.hass, self._hass_config, integration)
@@ -566,9 +588,18 @@ class ConfigEntriesFlowManager(data_entry_flow.FlowManager):
                 title="New devices discovered",
                 message=(
                     "We have discovered new devices on your network. "
-                    "[Check it out](/config/integrations)"
+                    "[Check it out](/config/integrations)."
                 ),
                 notification_id=DISCOVERY_NOTIFICATION_ID,
+            )
+        elif source == SOURCE_REAUTH:
+            self.hass.components.persistent_notification.async_create(
+                title="Integration requires reconfiguration",
+                message=(
+                    "At least one of your integrations requires reconfiguration to "
+                    "continue functioning. [Check it out](/config/integrations)."
+                ),
+                notification_id=RECONFIGURE_NOTIFICATION_ID,
             )
 
 
@@ -691,6 +722,8 @@ class ConfigEntries:
                 system_options=entry.get("system_options", {}),
                 # New in 0.104
                 unique_id=entry.get("unique_id"),
+                # New in 2021.3
+                disabled_by=entry.get("disabled_by"),
             )
             for entry in config["entries"]
         ]
@@ -739,23 +772,52 @@ class ConfigEntries:
 
         If an entry was not loaded, will just load.
         """
+        entry = self.async_get_entry(entry_id)
+
+        if entry is None:
+            raise UnknownEntry
+
         unload_result = await self.async_unload(entry_id)
 
-        if not unload_result:
+        if not unload_result or entry.disabled_by:
             return unload_result
 
         return await self.async_setup(entry_id)
+
+    async def async_set_disabled_by(
+        self, entry_id: str, disabled_by: Optional[str]
+    ) -> bool:
+        """Disable an entry.
+
+        If disabled_by is changed, the config entry will be reloaded.
+        """
+        entry = self.async_get_entry(entry_id)
+
+        if entry is None:
+            raise UnknownEntry
+
+        if entry.disabled_by == disabled_by:
+            return True
+
+        entry.disabled_by = disabled_by
+        self._async_schedule_save()
+
+        self.hass.bus.async_fire(
+            EVENT_CONFIG_ENTRY_DISABLED_BY_UPDATED, {"config_entry_id": entry_id}
+        )
+
+        return await self.async_reload(entry_id)
 
     @callback
     def async_update_entry(
         self,
         entry: ConfigEntry,
         *,
-        unique_id: Union[str, dict, None] = _UNDEF,
-        title: Union[str, dict] = _UNDEF,
-        data: dict = _UNDEF,
-        options: dict = _UNDEF,
-        system_options: dict = _UNDEF,
+        unique_id: Union[str, dict, None, UndefinedType] = UNDEFINED,
+        title: Union[str, dict, UndefinedType] = UNDEFINED,
+        data: Union[dict, UndefinedType] = UNDEFINED,
+        options: Union[dict, UndefinedType] = UNDEFINED,
+        system_options: Union[dict, UndefinedType] = UNDEFINED,
     ) -> bool:
         """Update a config entry.
 
@@ -767,24 +829,24 @@ class ConfigEntries:
         """
         changed = False
 
-        if unique_id is not _UNDEF and entry.unique_id != unique_id:
+        if unique_id is not UNDEFINED and entry.unique_id != unique_id:
             changed = True
             entry.unique_id = cast(Optional[str], unique_id)
 
-        if title is not _UNDEF and entry.title != title:
+        if title is not UNDEFINED and entry.title != title:
             changed = True
             entry.title = cast(str, title)
 
-        if data is not _UNDEF and entry.data != data:  # type: ignore
+        if data is not UNDEFINED and entry.data != data:  # type: ignore
             changed = True
             entry.data = MappingProxyType(data)
 
-        if options is not _UNDEF and entry.options != options:  # type: ignore
+        if options is not UNDEFINED and entry.options != options:  # type: ignore
             changed = True
             entry.options = MappingProxyType(options)
 
         if (
-            system_options is not _UNDEF
+            system_options is not UNDEFINED
             and entry.system_options.as_dict() != system_options
         ):
             changed = True
@@ -872,20 +934,21 @@ class ConfigFlow(data_entry_flow.FlowHandler):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> "OptionsFlow":
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         """Get the options flow for this handler."""
         raise data_entry_flow.UnknownHandler
 
     @callback
     def _abort_if_unique_id_configured(
-        self, updates: Optional[Dict[Any, Any]] = None, reload_on_update: bool = True,
+        self,
+        updates: Optional[Dict[Any, Any]] = None,
+        reload_on_update: bool = True,
     ) -> None:
         """Abort if the unique ID is already configured."""
-        assert self.hass
         if self.unique_id is None:
             return
 
-        for entry in self._async_current_entries():
+        for entry in self._async_current_entries(include_ignore=True):
             if entry.unique_id == self.unique_id:
                 if updates is not None:
                     changed = self.hass.config_entries.async_update_entry(
@@ -899,6 +962,9 @@ class ConfigFlow(data_entry_flow.FlowHandler):
                         self.hass.async_create_task(
                             self.hass.config_entries.async_reload(entry.entry_id)
                         )
+                # Allow ignored entries to be configured on manual user step
+                if entry.source == SOURCE_IGNORE and self.source == SOURCE_USER:
+                    continue
                 raise data_entry_flow.AbortFlow("already_configured")
 
     async def async_set_unique_id(
@@ -920,28 +986,33 @@ class ConfigFlow(data_entry_flow.FlowHandler):
         self.context["unique_id"] = unique_id  # pylint: disable=no-member
 
         # Abort discoveries done using the default discovery unique id
-        assert self.hass is not None
         if unique_id != DEFAULT_DISCOVERY_UNIQUE_ID:
             for progress in self._async_in_progress():
                 if progress["context"].get("unique_id") == DEFAULT_DISCOVERY_UNIQUE_ID:
                     self.hass.config_entries.flow.async_abort(progress["flow_id"])
 
-        for entry in self._async_current_entries():
+        for entry in self._async_current_entries(include_ignore=True):
             if entry.unique_id == unique_id:
                 return entry
 
         return None
 
     @callback
-    def _async_current_entries(self) -> List[ConfigEntry]:
-        """Return current entries."""
-        assert self.hass is not None
-        return self.hass.config_entries.async_entries(self.handler)
+    def _async_current_entries(self, include_ignore: bool = False) -> List[ConfigEntry]:
+        """Return current entries.
+
+        If the flow is user initiated, filter out ignored entries unless include_ignore is True.
+        """
+        config_entries = self.hass.config_entries.async_entries(self.handler)
+
+        if include_ignore or self.source != SOURCE_USER:
+            return config_entries
+
+        return [entry for entry in config_entries if entry.source != SOURCE_IGNORE]
 
     @callback
     def _async_current_ids(self, include_ignore: bool = True) -> Set[Optional[str]]:
         """Return current unique IDs."""
-        assert self.hass is not None
         return {
             entry.unique_id
             for entry in self.hass.config_entries.async_entries(self.handler)
@@ -951,7 +1022,6 @@ class ConfigFlow(data_entry_flow.FlowHandler):
     @callback
     def _async_in_progress(self) -> List[Dict]:
         """Return other in progress flows for current domain."""
-        assert self.hass is not None
         return [
             flw
             for flw in self.hass.config_entries.flow.async_progress()
@@ -961,7 +1031,7 @@ class ConfigFlow(data_entry_flow.FlowHandler):
     async def async_step_ignore(self, user_input: Dict[str, Any]) -> Dict[str, Any]:
         """Ignore this config flow."""
         await self.async_set_unique_id(user_input["unique_id"], raise_on_progress=False)
-        return self.async_create_entry(title="Ignored", data={})
+        return self.async_create_entry(title=user_input["title"], data={})
 
     async def async_step_unignore(self, user_input: Dict[str, Any]) -> Dict[str, Any]:
         """Rediscover a config entry by it's unique_id."""
@@ -994,7 +1064,6 @@ class ConfigFlow(data_entry_flow.FlowHandler):
         self._abort_if_unique_id_configured()
 
         # Abort if any other flow for this handler is already in progress
-        assert self.hass is not None
         if self._async_in_progress():
             raise data_entry_flow.AbortFlow("already_in_progress")
 
@@ -1005,10 +1074,31 @@ class ConfigFlow(data_entry_flow.FlowHandler):
         await self._async_handle_discovery_without_unique_id()
         return await self.async_step_user()
 
+    @callback
+    def async_abort(
+        self, *, reason: str, description_placeholders: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Abort the config flow."""
+        # Remove reauth notification if no reauth flows are in progress
+        if self.source == SOURCE_REAUTH and not any(
+            ent["context"]["source"] == SOURCE_REAUTH
+            for ent in self.hass.config_entries.flow.async_progress()
+            if ent["flow_id"] != self.flow_id
+        ):
+            self.hass.components.persistent_notification.async_dismiss(
+                RECONFIGURE_NOTIFICATION_ID
+            )
+
+        return super().async_abort(
+            reason=reason, description_placeholders=description_placeholders
+        )
+
     async_step_hassio = async_step_discovery
     async_step_homekit = async_step_discovery
+    async_step_mqtt = async_step_discovery
     async_step_ssdp = async_step_discovery
     async_step_zeroconf = async_step_discovery
+    async_step_dhcp = async_step_discovery
 
 
 class OptionsFlowManager(data_entry_flow.FlowManager):
@@ -1020,7 +1110,7 @@ class OptionsFlowManager(data_entry_flow.FlowManager):
         *,
         context: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
-    ) -> "OptionsFlow":
+    ) -> OptionsFlow:
         """Create an options flow for a config entry.
 
         Entry_id and flow.handler is the same thing to map entry with flow.
@@ -1042,6 +1132,9 @@ class OptionsFlowManager(data_entry_flow.FlowManager):
         Flow.handler and entry_id is the same thing to map flow with entry.
         """
         flow = cast(OptionsFlow, flow)
+
+        if result["type"] != data_entry_flow.RESULT_TYPE_CREATE_ENTRY:
+            return result
 
         entry = self.hass.config_entries.async_get_entry(flow.handler)
         if entry is None:
@@ -1077,8 +1170,6 @@ class SystemOptions:
 class EntityRegistryDisabledHandler:
     """Handler to handle when entities related to config entries updating disabled_by."""
 
-    RELOAD_AFTER_UPDATE_DELAY = 30
-
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the handler."""
         self.hass = hass
@@ -1090,17 +1181,13 @@ class EntityRegistryDisabledHandler:
     def async_setup(self) -> None:
         """Set up the disable handler."""
         self.hass.bus.async_listen(
-            entity_registry.EVENT_ENTITY_REGISTRY_UPDATED, self._handle_entry_updated
+            entity_registry.EVENT_ENTITY_REGISTRY_UPDATED,
+            self._handle_entry_updated,
+            event_filter=_handle_entry_updated_filter,
         )
 
     async def _handle_entry_updated(self, event: Event) -> None:
         """Handle entity registry entry update."""
-        if (
-            event.data["action"] != "update"
-            or "disabled_by" not in event.data["changes"]
-        ):
-            return
-
         if self.registry is None:
             self.registry = await entity_registry.async_get_registry(self.hass)
 
@@ -1135,7 +1222,7 @@ class EntityRegistryDisabledHandler:
             self._remove_call_later()
 
         self._remove_call_later = self.hass.helpers.event.async_call_later(
-            self.RELOAD_AFTER_UPDATE_DELAY, self._handle_reload
+            RELOAD_AFTER_UPDATE_DELAY, self._handle_reload
         )
 
     async def _handle_reload(self, _now: Any) -> None:
@@ -1152,6 +1239,14 @@ class EntityRegistryDisabledHandler:
         await asyncio.gather(
             *[self.hass.config_entries.async_reload(entry_id) for entry_id in to_reload]
         )
+
+
+@callback
+def _handle_entry_updated_filter(event: Event) -> bool:
+    """Handle entity registry entry update filter."""
+    if event.data["action"] != "update" or "disabled_by" not in event.data["changes"]:
+        return False
+    return True
 
 
 async def support_entry_unload(hass: HomeAssistant, domain: str) -> bool:

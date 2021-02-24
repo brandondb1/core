@@ -11,7 +11,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import aiohttp_client
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN, MYQ_COORDINATOR, MYQ_GATEWAY, PLATFORMS, UPDATE_INTERVAL
 
@@ -37,14 +37,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     except InvalidCredentialsError as err:
         _LOGGER.error("There was an error while logging in: %s", err)
         return False
-    except MyQError:
-        raise ConfigEntryNotReady
+    except MyQError as err:
+        raise ConfigEntryNotReady from err
+
+    # Called by DataUpdateCoordinator, allows to capture any MyQError exceptions and to throw an HASS UpdateFailed
+    # exception instead, preventing traceback in HASS logs.
+    async def async_update_data():
+        try:
+            return await myq.update_device_info()
+        except MyQError as err:
+            raise UpdateFailed(str(err)) from err
 
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
         name="myq devices",
-        update_method=myq.update_device_info,
+        update_method=async_update_data,
         update_interval=timedelta(seconds=UPDATE_INTERVAL),
     )
 

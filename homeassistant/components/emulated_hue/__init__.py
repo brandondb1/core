@@ -5,7 +5,12 @@ from aiohttp import web
 import voluptuous as vol
 
 from homeassistant import util
-from homeassistant.const import EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import (
+    CONF_ENTITIES,
+    CONF_TYPE,
+    EVENT_HOMEASSISTANT_START,
+    EVENT_HOMEASSISTANT_STOP,
+)
 from homeassistant.exceptions import HomeAssistantError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.util.json import load_json, save_json
@@ -31,20 +36,20 @@ NUMBERS_FILE = "emulated_hue_ids.json"
 
 CONF_ADVERTISE_IP = "advertise_ip"
 CONF_ADVERTISE_PORT = "advertise_port"
-CONF_ENTITIES = "entities"
 CONF_ENTITY_HIDDEN = "hidden"
 CONF_ENTITY_NAME = "name"
 CONF_EXPOSE_BY_DEFAULT = "expose_by_default"
 CONF_EXPOSED_DOMAINS = "exposed_domains"
 CONF_HOST_IP = "host_ip"
+CONF_LIGHTS_ALL_DIMMABLE = "lights_all_dimmable"
 CONF_LISTEN_PORT = "listen_port"
 CONF_OFF_MAPS_TO_ON_DOMAINS = "off_maps_to_on_domains"
-CONF_TYPE = "type"
 CONF_UPNP_BIND_MULTICAST = "upnp_bind_multicast"
 
 TYPE_ALEXA = "alexa"
 TYPE_GOOGLE = "google_home"
 
+DEFAULT_LIGHTS_ALL_DIMMABLE = False
 DEFAULT_LISTEN_PORT = 8300
 DEFAULT_UPNP_BIND_MULTICAST = True
 DEFAULT_OFF_MAPS_TO_ON_DOMAINS = ["script", "scene"]
@@ -84,6 +89,9 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_ENTITIES): vol.Schema(
                     {cv.entity_id: CONFIG_ENTITY_SCHEMA}
                 ),
+                vol.Optional(
+                    CONF_LIGHTS_ALL_DIMMABLE, default=DEFAULT_LIGHTS_ALL_DIMMABLE
+                ): cv.boolean,
             }
         )
     },
@@ -243,6 +251,10 @@ class Config:
             hidden_value = self.entities[entity_id].get(CONF_ENTITY_HIDDEN)
             if hidden_value is not None:
                 self._entities_with_hidden_attr_in_config[entity_id] = hidden_value
+
+        # Get whether all non-dimmable lights should be reported as dimmable
+        # for compatibility with older installations.
+        self.lights_all_dimmable = conf.get(CONF_LIGHTS_ALL_DIMMABLE)
 
     def entity_id_to_number(self, entity_id):
         """Get a unique number for the entity id."""

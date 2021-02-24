@@ -1,9 +1,9 @@
 """Test the frame helper."""
+from unittest.mock import Mock, patch
+
 import pytest
 
 from homeassistant.helpers import frame
-
-from tests.async_mock import Mock, patch
 
 
 async def test_extract_frame_integration(caplog):
@@ -57,7 +57,11 @@ async def test_extract_frame_integration_with_excluded_intergration(caplog):
                 lineno="23",
                 line="self.light.is_on",
             ),
-            Mock(filename="/home/dev/mdns/lights.py", lineno="2", line="something()",),
+            Mock(
+                filename="/home/dev/mdns/lights.py",
+                lineno="2",
+                line="something()",
+            ),
         ],
     ):
         found_frame, integration, path = frame.get_integration_frame(

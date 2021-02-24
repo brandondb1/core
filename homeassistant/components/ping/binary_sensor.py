@@ -1,17 +1,25 @@
 """Tracks the latency of a host by sending ICMP echo requests (ping)."""
 import asyncio
 from datetime import timedelta
+from functools import partial
 import logging
 import re
 import sys
 from typing import Any, Dict
 
+from icmplib import SocketPermissionError, ping as icmp_ping
 import voluptuous as vol
 
-from homeassistant.components.binary_sensor import PLATFORM_SCHEMA, BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    DEVICE_CLASS_CONNECTIVITY,
+    PLATFORM_SCHEMA,
+    BinarySensorEntity,
+)
 from homeassistant.const import CONF_HOST, CONF_NAME
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.reload import setup_reload_service
 
+from . import DOMAIN, PLATFORMS, async_get_next_ping_id
 from .const import PING_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,7 +34,6 @@ CONF_PING_COUNT = "count"
 
 DEFAULT_NAME = "Ping"
 DEFAULT_PING_COUNT = 5
-DEFAULT_DEVICE_CLASS = "connectivity"
 
 SCAN_INTERVAL = timedelta(minutes=5)
 
@@ -55,11 +62,23 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 
 def setup_platform(hass, config, add_entities, discovery_info=None) -> None:
     """Set up the Ping Binary sensor."""
+    setup_reload_service(hass, DOMAIN, PLATFORMS)
+
     host = config[CONF_HOST]
     count = config[CONF_PING_COUNT]
     name = config.get(CONF_NAME, f"{DEFAULT_NAME} {host}")
 
-    add_entities([PingBinarySensor(name, PingData(host, count))], True)
+    try:
+        # Verify we can create a raw socket, or
+        # fallback to using a subprocess
+        icmp_ping("127.0.0.1", count=0, timeout=0)
+        ping_cls = PingDataICMPLib
+    except SocketPermissionError:
+        ping_cls = PingDataSubProcess
+
+    ping_data = ping_cls(hass, host, count)
+
+    add_entities([PingBinarySensor(name, ping_data)], True)
 
 
 class PingBinarySensor(BinarySensorEntity):
@@ -78,7 +97,7 @@ class PingBinarySensor(BinarySensorEntity):
     @property
     def device_class(self) -> str:
         """Return the class of this sensor."""
-        return DEFAULT_DEVICE_CLASS
+        return DEVICE_CLASS_CONNECTIVITY
 
     @property
     def is_on(self) -> bool:
@@ -102,15 +121,51 @@ class PingBinarySensor(BinarySensorEntity):
 
 
 class PingData:
-    """The Class for handling the data retrieval."""
+    """The base class for handling the data retrieval."""
 
-    def __init__(self, host, count) -> None:
+    def __init__(self, hass, host, count) -> None:
         """Initialize the data object."""
+        self.hass = hass
         self._ip_address = host
         self._count = count
         self.data = {}
         self.available = False
 
+
+class PingDataICMPLib(PingData):
+    """The Class for handling the data retrieval using icmplib."""
+
+    async def async_update(self) -> None:
+        """Retrieve the latest details from the host."""
+        _LOGGER.debug("ping address: %s", self._ip_address)
+        data = await self.hass.async_add_executor_job(
+            partial(
+                icmp_ping,
+                self._ip_address,
+                count=self._count,
+                timeout=1,
+                id=async_get_next_ping_id(self.hass),
+            )
+        )
+        self.available = data.is_alive
+        if not self.available:
+            self.data = False
+            return
+
+        self.data = {
+            "min": data.min_rtt,
+            "max": data.max_rtt,
+            "avg": data.avg_rtt,
+            "mdev": "",
+        }
+
+
+class PingDataSubProcess(PingData):
+    """The Class for handling the data retrieval using the ping binary."""
+
+    def __init__(self, hass, host, count) -> None:
+        """Initialize the data object."""
+        super().__init__(hass, host, count)
         if sys.platform == "win32":
             self._ping_cmd = [
                 "ping",
@@ -159,7 +214,8 @@ class PingData:
                     out_error,
                 )
 
-            if pinger.returncode != 0:
+            if pinger.returncode > 1:
+                # returncode of 1 means the host is unreachable
                 _LOGGER.exception(
                     "Error running command: `%s`, return code: %s",
                     " ".join(self._ping_cmd),

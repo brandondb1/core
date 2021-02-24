@@ -65,27 +65,30 @@ _VALID_STATES = [
     STATE_ERROR,
 ]
 
-VACUUM_SCHEMA = vol.Schema(
-    {
-        vol.Optional(CONF_FRIENDLY_NAME): cv.string,
-        vol.Optional(CONF_VALUE_TEMPLATE): cv.template,
-        vol.Optional(CONF_BATTERY_LEVEL_TEMPLATE): cv.template,
-        vol.Optional(CONF_FAN_SPEED_TEMPLATE): cv.template,
-        vol.Optional(CONF_AVAILABILITY_TEMPLATE): cv.template,
-        vol.Optional(CONF_ATTRIBUTE_TEMPLATES, default={}): vol.Schema(
-            {cv.string: cv.template}
-        ),
-        vol.Required(SERVICE_START): cv.SCRIPT_SCHEMA,
-        vol.Optional(SERVICE_PAUSE): cv.SCRIPT_SCHEMA,
-        vol.Optional(SERVICE_STOP): cv.SCRIPT_SCHEMA,
-        vol.Optional(SERVICE_RETURN_TO_BASE): cv.SCRIPT_SCHEMA,
-        vol.Optional(SERVICE_CLEAN_SPOT): cv.SCRIPT_SCHEMA,
-        vol.Optional(SERVICE_LOCATE): cv.SCRIPT_SCHEMA,
-        vol.Optional(SERVICE_SET_FAN_SPEED): cv.SCRIPT_SCHEMA,
-        vol.Optional(CONF_FAN_SPEED_LIST, default=[]): cv.ensure_list,
-        vol.Optional(CONF_ENTITY_ID): cv.entity_ids,
-        vol.Optional(CONF_UNIQUE_ID): cv.string,
-    }
+VACUUM_SCHEMA = vol.All(
+    cv.deprecated(CONF_ENTITY_ID),
+    vol.Schema(
+        {
+            vol.Optional(CONF_FRIENDLY_NAME): cv.string,
+            vol.Optional(CONF_VALUE_TEMPLATE): cv.template,
+            vol.Optional(CONF_BATTERY_LEVEL_TEMPLATE): cv.template,
+            vol.Optional(CONF_FAN_SPEED_TEMPLATE): cv.template,
+            vol.Optional(CONF_AVAILABILITY_TEMPLATE): cv.template,
+            vol.Optional(CONF_ATTRIBUTE_TEMPLATES, default={}): vol.Schema(
+                {cv.string: cv.template}
+            ),
+            vol.Required(SERVICE_START): cv.SCRIPT_SCHEMA,
+            vol.Optional(SERVICE_PAUSE): cv.SCRIPT_SCHEMA,
+            vol.Optional(SERVICE_STOP): cv.SCRIPT_SCHEMA,
+            vol.Optional(SERVICE_RETURN_TO_BASE): cv.SCRIPT_SCHEMA,
+            vol.Optional(SERVICE_CLEAN_SPOT): cv.SCRIPT_SCHEMA,
+            vol.Optional(SERVICE_LOCATE): cv.SCRIPT_SCHEMA,
+            vol.Optional(SERVICE_SET_FAN_SPEED): cv.SCRIPT_SCHEMA,
+            vol.Optional(CONF_FAN_SPEED_LIST, default=[]): cv.ensure_list,
+            vol.Optional(CONF_ENTITY_ID): cv.entity_ids,
+            vol.Optional(CONF_UNIQUE_ID): cv.string,
+        }
+    ),
 )
 
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
@@ -144,7 +147,6 @@ async def _async_create_entities(hass, config):
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Set up the template vacuums."""
-
     await async_setup_reload_service(hass, DOMAIN, PLATFORMS)
     async_add_entities(await _async_create_entities(hass, config))
 
@@ -334,14 +336,16 @@ class TemplateVacuum(TemplateEntity, StateVacuumEntity):
 
     async def async_added_to_hass(self):
         """Register callbacks."""
-
         if self._template is not None:
             self.add_template_attribute(
                 "_state", self._template, None, self._update_state
             )
         if self._fan_speed_template is not None:
             self.add_template_attribute(
-                "_fan_speed", self._fan_speed_template, None, self._update_fan_speed,
+                "_fan_speed",
+                self._fan_speed_template,
+                None,
+                self._update_fan_speed,
             )
         if self._battery_level_template is not None:
             self.add_template_attribute(

@@ -129,28 +129,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Prepare configuration for a discovered nut device."""
         self.discovery_info = discovery_info
         await self._async_handle_discovery_without_unique_id()
-        # pylint: disable=no-member # https://github.com/PyCQA/pylint/issues/3167
         self.context["title_placeholders"] = {
             CONF_PORT: discovery_info.get(CONF_PORT, DEFAULT_PORT),
             CONF_HOST: discovery_info[CONF_HOST],
         }
         return await self.async_step_user()
-
-    async def async_step_import(self, user_input=None):
-        """Handle the import."""
-        errors = {}
-        if user_input is not None:
-            if self._host_port_alias_already_configured(user_input):
-                return self.async_abort(reason="already_configured")
-            _, errors = await self._async_validate_or_error(user_input)
-
-            if not errors:
-                title = _format_host_port_alias(user_input)
-                return self.async_create_entry(title=title, data=user_input)
-
-        return self.async_show_form(
-            step_id="user", data_schema=_base_schema({}), errors=errors
-        )
 
     async def async_step_user(self, user_input=None):
         """Handle the user input."""
@@ -194,7 +177,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return await self.async_step_resources()
 
         return self.async_show_form(
-            step_id="ups", data_schema=_ups_schema(self.ups_list), errors=errors,
+            step_id="ups",
+            data_schema=_ups_schema(self.ups_list),
+            errors=errors,
         )
 
     async def async_step_resources(self, user_input=None):
@@ -264,7 +249,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         ] = cv.positive_int
 
         return self.async_show_form(
-            step_id="init", data_schema=vol.Schema(base_schema),
+            step_id="init",
+            data_schema=vol.Schema(base_schema),
         )
 
 

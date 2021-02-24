@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from os import path
 import statistics
 import unittest
+from unittest.mock import patch
 
 import pytest
 
@@ -18,7 +19,6 @@ from homeassistant.const import (
 from homeassistant.setup import async_setup_component, setup_component
 from homeassistant.util import dt as dt_util
 
-from tests.async_mock import patch
 from tests.common import (
     fire_time_changed,
     get_test_home_assistant,
@@ -115,7 +115,7 @@ class TestStatisticsSensor(unittest.TestCase):
         assert self.mean == state.attributes.get("mean")
         assert self.count == state.attributes.get("count")
         assert self.total == state.attributes.get("total")
-        assert TEMP_CELSIUS == state.attributes.get("unit_of_measurement")
+        assert TEMP_CELSIUS == state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
         assert self.change == state.attributes.get("change")
         assert self.average_change == state.attributes.get("average_change")
 
@@ -479,11 +479,16 @@ async def test_reload(hass):
     assert hass.states.get("sensor.test")
 
     yaml_path = path.join(
-        _get_fixtures_base_path(), "fixtures", "statistics/configuration.yaml",
+        _get_fixtures_base_path(),
+        "fixtures",
+        "statistics/configuration.yaml",
     )
     with patch.object(hass_config, "YAML_CONFIG_FILE", yaml_path):
         await hass.services.async_call(
-            DOMAIN, SERVICE_RELOAD, {}, blocking=True,
+            DOMAIN,
+            SERVICE_RELOAD,
+            {},
+            blocking=True,
         )
         await hass.async_block_till_done()
 

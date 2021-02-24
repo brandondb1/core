@@ -1,11 +1,7 @@
 """Support for interacting with Smappee Comport Plugs, Switches and Output Modules."""
-import logging
-
 from homeassistant.components.switch import SwitchEntity
 
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
 
 SWITCH_PREFIX = "Switch"
 ICON = "mdi:toggle-switch"
@@ -144,7 +140,9 @@ class SmappeeActuator(SwitchEntity):
         return None
 
     @property
-    def unique_id(self,):
+    def unique_id(
+        self,
+    ):
         """Return the unique ID for this switch."""
         if self._actuator_type == "INFINITY_OUTPUT_MODULE":
             return (

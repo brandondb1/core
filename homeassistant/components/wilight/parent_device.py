@@ -84,18 +84,19 @@ class WiLightParent:
     async def async_reset(self):
         """Reset api."""
 
-        # If the initialization was wrong.
-        if self._api is None:
-            return True
-
-        self._api.client.stop()
+        # If the initialization was not wrong.
+        if self._api is not None:
+            self._api.client.stop()
 
 
 def create_api_device(host):
     """Create an API Device."""
     try:
         device = pywilight.device_from_host(host)
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,) as err:
+    except (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+    ) as err:
         _LOGGER.error("Unable to access WiLight at %s (%s)", host, err)
         return None
 

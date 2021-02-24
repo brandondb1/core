@@ -20,6 +20,7 @@ from homeassistant.components.cover import (
     CoverEntity,
 )
 from homeassistant.const import (
+    CONF_COVERS,
     CONF_DEVICE_CLASS,
     CONF_ENTITY_ID,
     CONF_ENTITY_PICTURE_TEMPLATE,
@@ -29,7 +30,9 @@ from homeassistant.const import (
     CONF_UNIQUE_ID,
     CONF_VALUE_TEMPLATE,
     STATE_CLOSED,
+    STATE_CLOSING,
     STATE_OPEN,
+    STATE_OPENING,
 )
 from homeassistant.core import callback
 from homeassistant.exceptions import TemplateError
@@ -42,9 +45,14 @@ from .const import CONF_AVAILABILITY_TEMPLATE, DOMAIN, PLATFORMS
 from .template_entity import TemplateEntity
 
 _LOGGER = logging.getLogger(__name__)
-_VALID_STATES = [STATE_OPEN, STATE_CLOSED, "true", "false"]
-
-CONF_COVERS = "covers"
+_VALID_STATES = [
+    STATE_OPEN,
+    STATE_OPENING,
+    STATE_CLOSED,
+    STATE_CLOSING,
+    "true",
+    "false",
+]
 
 CONF_POSITION_TEMPLATE = "position_template"
 CONF_TILT_TEMPLATE = "tilt_template"
@@ -66,6 +74,7 @@ TILT_FEATURES = (
 )
 
 COVER_SCHEMA = vol.All(
+    cv.deprecated(CONF_ENTITY_ID),
     vol.Schema(
         {
             vol.Inclusive(OPEN_ACTION, CONF_OPEN_OR_CLOSE): cv.SCRIPT_SCHEMA,
@@ -151,7 +160,6 @@ async def _async_create_entities(hass, config):
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Set up the Template cover."""
-
     await async_setup_reload_service(hass, DOMAIN, PLATFORMS)
     async_add_entities(await _async_create_entities(hass, config))
 
@@ -218,7 +226,6 @@ class CoverTemplate(TemplateEntity, CoverEntity):
 
     async def async_added_to_hass(self):
         """Register callbacks."""
-
         if self._template:
             self.add_template_attribute(
                 "_position", self._template, None, self._update_state
@@ -248,15 +255,17 @@ class CoverTemplate(TemplateEntity, CoverEntity):
             self._position = None
             return
 
-        if result in _VALID_STATES:
-            if result in ("true", STATE_OPEN):
+        state = str(result).lower()
+
+        if state in _VALID_STATES:
+            if state in ("true", STATE_OPEN):
                 self._position = 100
             else:
                 self._position = 0
         else:
             _LOGGER.error(
                 "Received invalid cover is_on state: %s. Expected: %s",
-                result,
+                state,
                 ", ".join(_VALID_STATES),
             )
             self._position = None
@@ -291,7 +300,8 @@ class CoverTemplate(TemplateEntity, CoverEntity):
         if state < 0 or state > 100:
             self._tilt_value = None
             _LOGGER.error(
-                "Tilt value must be between 0 and 100. Value was: %.2f", state,
+                "Tilt value must be between 0 and 100. Value was: %.2f",
+                state,
             )
         else:
             self._tilt_value = state

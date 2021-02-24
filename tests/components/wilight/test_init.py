@@ -1,9 +1,10 @@
 """Tests for the WiLight integration."""
-from asynctest import patch
+from unittest.mock import patch
+
 import pytest
 import pywilight
+from pywilight.const import DOMAIN
 
-from homeassistant.components.wilight.const import DOMAIN
 from homeassistant.config_entries import (
     ENTRY_STATE_LOADED,
     ENTRY_STATE_NOT_LOADED,
@@ -36,7 +37,8 @@ def mock_dummy_device_from_host():
     device.set_dummy(True)
 
     with patch(
-        "pywilight.device_from_host", return_value=device,
+        "pywilight.device_from_host",
+        return_value=device,
     ):
         yield device
 

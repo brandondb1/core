@@ -1,6 +1,7 @@
 """Entity for Zigbee Home Automation."""
 
 import asyncio
+import functools
 import logging
 from typing import Any, Awaitable, Dict, List, Optional
 
@@ -165,7 +166,7 @@ class ZhaEntity(BaseZhaEntity, RestoreEntity):
         self.async_accept_signal(
             None,
             f"{SIGNAL_REMOVE}_{self.zha_device.ieee}",
-            self.async_remove,
+            functools.partial(self.async_remove, force_remove=True),
             signal_override=True,
         )
 
@@ -202,9 +203,13 @@ class ZhaEntity(BaseZhaEntity, RestoreEntity):
 
     async def async_update(self) -> None:
         """Retrieve latest state."""
-        for channel in self.cluster_channels.values():
-            if hasattr(channel, "async_update"):
-                await channel.async_update()
+        tasks = [
+            channel.async_update()
+            for channel in self.cluster_channels.values()
+            if hasattr(channel, "async_update")
+        ]
+        if tasks:
+            await asyncio.gather(*tasks)
 
 
 class ZhaGroupEntity(BaseZhaEntity):
@@ -235,7 +240,7 @@ class ZhaGroupEntity(BaseZhaEntity):
             return
 
         self._handled_group_membership = True
-        await self.async_remove()
+        await self.async_remove(force_remove=True)
 
     async def async_added_to_hass(self) -> None:
         """Register callbacks."""

@@ -33,7 +33,7 @@ from .const import (
     ENTITY_COMPONENTS,
 )
 
-CONFIG_SCHEMA = cv.deprecated(DOMAIN, invalidation_version="0.117")
+CONFIG_SCHEMA = cv.deprecated(DOMAIN)
 
 
 LOGGER_INFO_REGEX = re.compile(r"^(\w+)\.?(\w+)?\.?(\w+)?\.?(\w+)?(?:\..*)?$")
@@ -75,7 +75,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     tracing = {}
     if entry.options.get(CONF_TRACING):
         tracing = {
-            "traceparent_v2": True,
             "traces_sample_rate": entry.options.get(
                 CONF_TRACING_SAMPLE_RATE, DEFAULT_TRACING_SAMPLE_RATE
             ),

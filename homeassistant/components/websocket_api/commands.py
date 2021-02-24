@@ -1,6 +1,5 @@
 """Commands part of Websocket API."""
 import asyncio
-import logging
 
 import voluptuous as vol
 
@@ -15,13 +14,12 @@ from homeassistant.exceptions import (
     Unauthorized,
 )
 from homeassistant.helpers import config_validation as cv, entity
-from homeassistant.helpers.event import async_track_template_result
+from homeassistant.helpers.event import TrackTemplate, async_track_template_result
 from homeassistant.helpers.service import async_get_all_descriptions
+from homeassistant.helpers.template import Template
 from homeassistant.loader import IntegrationNotFound, async_get_integration
 
 from . import const, decorators, messages
-
-_LOGGER = logging.getLogger(__name__)
 
 # mypy: allow-untyped-calls, allow-untyped-defs
 
@@ -60,11 +58,11 @@ def handle_subscribe_events(hass, connection, msg):
     """Handle subscribe events command."""
     # Circular dep
     # pylint: disable=import-outside-toplevel
-    from .permissions import SUBSCRIBE_WHITELIST
+    from .permissions import SUBSCRIBE_ALLOWLIST
 
     event_type = msg["event_type"]
 
-    if event_type not in SUBSCRIBE_WHITELIST and not connection.user.is_admin:
+    if event_type not in SUBSCRIBE_ALLOWLIST and not connection.user.is_admin:
         raise Unauthorized
 
     if event_type == EVENT_STATE_CHANGED:
@@ -77,7 +75,7 @@ def handle_subscribe_events(hass, connection, msg):
             ):
                 return
 
-            connection.send_message(messages.event_message(msg["id"], event))
+            connection.send_message(messages.cached_event_message(msg["id"], event))
 
     else:
 
@@ -87,7 +85,7 @@ def handle_subscribe_events(hass, connection, msg):
             if event.event_type == EVENT_TIME_CHANGED:
                 return
 
-            connection.send_message(messages.event_message(msg["id"], event.as_dict()))
+            connection.send_message(messages.cached_event_message(msg["id"], event))
 
     connection.subscriptions[msg["id"]] = hass.bus.async_listen(
         event_type, forward_events
@@ -123,6 +121,7 @@ def handle_unsubscribe_events(hass, connection, msg):
         vol.Required("type"): "call_service",
         vol.Required("domain"): str,
         vol.Required("service"): str,
+        vol.Optional("target"): cv.ENTITY_SERVICE_FIELDS,
         vol.Optional("service_data"): dict,
     }
 )
@@ -134,15 +133,17 @@ async def handle_call_service(hass, connection, msg):
         blocking = False
 
     try:
+        context = connection.context(msg)
         await hass.services.async_call(
             msg["domain"],
             msg["service"],
             msg.get("service_data"),
             blocking,
-            connection.context(msg),
+            context,
+            target=msg.get("target"),
         )
         connection.send_message(
-            messages.result_message(msg["id"], {"context": connection.context(msg)})
+            messages.result_message(msg["id"], {"context": context})
         )
     except ServiceNotFound as err:
         if err.domain == msg["domain"] and err.service == msg["service"]:
@@ -157,6 +158,10 @@ async def handle_call_service(hass, connection, msg):
                     msg["id"], const.ERR_HOME_ASSISTANT_ERROR, str(err)
                 )
             )
+    except vol.Invalid as err:
+        connection.send_message(
+            messages.error_message(msg["id"], const.ERR_INVALID_FORMAT, str(err))
+        )
     except HomeAssistantError as err:
         connection.logger.exception(err)
         connection.send_message(
@@ -238,36 +243,64 @@ def handle_ping(hass, connection, msg):
     connection.send_message(pong_message(msg["id"]))
 
 
-@callback
 @decorators.websocket_command(
     {
         vol.Required("type"): "render_template",
-        vol.Required("template"): cv.template,
+        vol.Required("template"): str,
         vol.Optional("entity_ids"): cv.entity_ids,
         vol.Optional("variables"): dict,
+        vol.Optional("timeout"): vol.Coerce(float),
     }
 )
-def handle_render_template(hass, connection, msg):
+@decorators.async_response
+async def handle_render_template(hass, connection, msg):
     """Handle render_template command."""
-    template = msg["template"]
-    template.hass = hass
-
+    template_str = msg["template"]
+    template = Template(template_str, hass)
     variables = msg.get("variables")
+    timeout = msg.get("timeout")
+    info = None
+
+    if timeout:
+        try:
+            timed_out = await template.async_render_will_timeout(timeout)
+        except TemplateError as ex:
+            connection.send_error(msg["id"], const.ERR_TEMPLATE_ERROR, str(ex))
+            return
+
+        if timed_out:
+            connection.send_error(
+                msg["id"],
+                const.ERR_TEMPLATE_ERROR,
+                f"Exceeded maximum execution time of {timeout}s",
+            )
+            return
 
     @callback
-    def _template_listener(event, template, last_result, result):
+    def _template_listener(event, updates):
+        nonlocal info
+        track_template_result = updates.pop()
+        result = track_template_result.result
         if isinstance(result, TemplateError):
-            _LOGGER.error(
-                "TemplateError('%s') " "while processing template '%s'",
-                result,
-                template,
+            connection.send_error(msg["id"], const.ERR_TEMPLATE_ERROR, str(result))
+            return
+
+        connection.send_message(
+            messages.event_message(
+                msg["id"], {"result": result, "listeners": info.listeners}  # type: ignore
             )
+        )
 
-            result = None
-
-        connection.send_message(messages.event_message(msg["id"], {"result": result}))
-
-    info = async_track_template_result(hass, template, _template_listener, variables)
+    try:
+        info = async_track_template_result(
+            hass,
+            [TrackTemplate(template, variables)],
+            _template_listener,
+            raise_on_template_error=True,
+        )
+    except TemplateError as ex:
+        connection.send_error(msg["id"], const.ERR_TEMPLATE_ERROR, str(ex))
+        return
 
     connection.subscriptions[msg["id"]] = info.async_remove
 

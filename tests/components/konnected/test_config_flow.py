@@ -1,10 +1,11 @@
 """Tests for Konnected Alarm Panel config flow."""
+from unittest.mock import patch
+
 import pytest
 
 from homeassistant.components import konnected
 from homeassistant.components.konnected import config_flow
 
-from tests.async_mock import patch
 from tests.common import MockConfigEntry
 
 
@@ -1108,7 +1109,8 @@ async def test_option_flow_import(hass, mock_panel):
     assert schema["8"] == "Disabled"
 
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={},
+        result["flow_id"],
+        user_input={},
     )
     assert result["type"] == "form"
     assert result["step_id"] == "options_binary"
@@ -1129,7 +1131,8 @@ async def test_option_flow_import(hass, mock_panel):
     assert schema["type"] == "ds18b20"
     assert schema["name"] == "temper"
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"type": "dht"},
+        result["flow_id"],
+        user_input={"type": "dht"},
     )
     assert result["type"] == "form"
     assert result["step_id"] == "options_switch"

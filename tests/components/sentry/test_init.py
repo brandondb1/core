@@ -1,5 +1,6 @@
 """Tests for Sentry integration."""
 import logging
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -17,7 +18,6 @@ from homeassistant.components.sentry.const import (
 from homeassistant.const import __version__ as current_version
 from homeassistant.core import HomeAssistant
 
-from tests.async_mock import MagicMock, Mock, patch
 from tests.common import MockConfigEntry
 
 
@@ -98,11 +98,9 @@ async def test_setup_entry_with_tracing(hass: HomeAssistant) -> None:
         "integrations",
         "release",
         "before_send",
-        "traceparent_v2",
         "traces_sample_rate",
     }
     assert call_args["traces_sample_rate"] == 0.5
-    assert call_args["traceparent_v2"]
 
 
 @pytest.mark.parametrize(
